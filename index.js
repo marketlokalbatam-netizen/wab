@@ -16,6 +16,7 @@ const fs = require("fs");
 
 // ================= EXPRESS UI SERVER =================
 const app = express();
+app.use(express.json());
 const PORT = process.env.PORT || 65002;
 
 app.get("/api/status", (req, res) => {
@@ -28,6 +29,33 @@ app.get("/api/qr", (req, res) => {
     } else {
         res.json({ qr: null });
     }
+});
+
+// ================= API RESTART =================
+app.post("/api/restart", async (req, res) => {
+    const RESTART_PASSWORD = process.env.RESTART_PASSWORD;
+    if (!RESTART_PASSWORD) {
+        return res.status(503).json({ ok: false, message: "RESTART_PASSWORD belum diset di server." });
+    }
+    const { password } = req.body || {};
+    if (!password || password !== RESTART_PASSWORD) {
+        return res.status(401).json({ ok: false, message: "Password salah." });
+    }
+    res.json({ ok: true, message: "Restart sedang diproses..." });
+    console.log("[RESTART] Permintaan restart diterima.");
+    state.status = "starting";
+    state.qrDataUrl = null;
+    try {
+        await client.destroy();
+        console.log("[RESTART] Client dihancurkan. Reinisialisasi dalam 3 detik...");
+    } catch (e) {
+        console.log("[RESTART] destroy error (diabaikan):", e?.message);
+    }
+    setTimeout(() => {
+        cleanLocks();
+        client.initialize();
+        console.log("[RESTART] Client diinisialisasi ulang.");
+    }, 3000);
 });
 
 app.get("/", (req, res) => {
@@ -177,6 +205,114 @@ app.get("/", (req, res) => {
       font-size: 0.75rem;
       color: #475569;
     }
+
+    .btn-restart {
+      margin-top: 20px;
+      width: 100%;
+      padding: 10px 0;
+      border: 1px solid #3f3f5a;
+      border-radius: 10px;
+      background: #1e2040;
+      color: #94a3b8;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+    }
+    .btn-restart:hover {
+      background: #2d2f55;
+      color: #e2e8f0;
+      border-color: #6366f1;
+    }
+    .btn-restart:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(4px);
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .modal-overlay.open { display: flex; }
+
+    .modal {
+      background: #1a1d2e;
+      border: 1px solid #2d3148;
+      border-radius: 16px;
+      padding: 32px 28px;
+      width: 100%;
+      max-width: 340px;
+      text-align: center;
+      box-shadow: 0 12px 48px rgba(0,0,0,0.5);
+    }
+    .modal h2 {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #f8fafc;
+      margin-bottom: 6px;
+    }
+    .modal p {
+      font-size: 0.82rem;
+      color: #64748b;
+      margin-bottom: 20px;
+    }
+    .modal input[type="password"] {
+      width: 100%;
+      padding: 10px 14px;
+      border-radius: 8px;
+      border: 1px solid #2d3148;
+      background: #0f1117;
+      color: #e2e8f0;
+      font-size: 0.9rem;
+      outline: none;
+      margin-bottom: 8px;
+    }
+    .modal input[type="password"]:focus {
+      border-color: #6366f1;
+    }
+    #modal-error {
+      font-size: 0.78rem;
+      color: #f87171;
+      min-height: 18px;
+      margin-bottom: 14px;
+    }
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+    }
+    .btn-cancel {
+      flex: 1;
+      padding: 10px 0;
+      border-radius: 8px;
+      border: 1px solid #2d3148;
+      background: transparent;
+      color: #64748b;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-cancel:hover { background: #1e2040; }
+
+    .btn-confirm {
+      flex: 1;
+      padding: 10px 0;
+      border-radius: 8px;
+      border: none;
+      background: #6366f1;
+      color: #fff;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-confirm:hover { background: #4f52d0; }
+    .btn-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -219,9 +355,24 @@ app.get("/", (req, res) => {
     </div>
 
     <p class="refresh-note">Halaman diperbarui otomatis setiap 3 detik</p>
+    <button class="btn-restart" id="btn-restart" onclick="openModal()">🔄 Restart Bot</button>
   </div>
 
   <div class="footer">Bot Setoran &copy; ${new Date().getFullYear()}</div>
+
+  <!-- MODAL PASSWORD -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal">
+      <h2>🔒 Konfirmasi Restart</h2>
+      <p>Masukkan password admin untuk melanjutkan restart bot.</p>
+      <input type="password" id="modal-pass" placeholder="Password..." />
+      <div id="modal-error"></div>
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeModal()">Batal</button>
+        <button class="btn-confirm" id="btn-confirm" onclick="doRestart()">Restart</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     let lastStatus = null;
@@ -290,6 +441,68 @@ app.get("/", (req, res) => {
 
     poll();
     setInterval(poll, 3000);
+
+    // ===== MODAL RESTART =====
+    function openModal() {
+      document.getElementById('modal-pass').value = '';
+      document.getElementById('modal-error').textContent = '';
+      document.getElementById('modal-overlay').classList.add('open');
+      setTimeout(() => document.getElementById('modal-pass').focus(), 100);
+    }
+
+    function closeModal() {
+      document.getElementById('modal-overlay').classList.remove('open');
+    }
+
+    document.getElementById('modal-overlay').addEventListener('click', function(e) {
+      if (e.target === this) closeModal();
+    });
+
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') closeModal();
+      if (e.key === 'Enter' && document.getElementById('modal-overlay').classList.contains('open')) doRestart();
+    });
+
+    async function doRestart() {
+      const pass = document.getElementById('modal-pass').value.trim();
+      const errEl = document.getElementById('modal-error');
+      const btn = document.getElementById('btn-confirm');
+
+      if (!pass) {
+        errEl.textContent = 'Password tidak boleh kosong.';
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Memproses...';
+      errEl.textContent = '';
+
+      try {
+        const res = await fetch('/api/restart', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pass }),
+        });
+        const data = await res.json();
+
+        if (data.ok) {
+          closeModal();
+          document.getElementById('btn-restart').disabled = true;
+          document.getElementById('btn-restart').textContent = '🔄 Restarting...';
+          setTimeout(() => {
+            document.getElementById('btn-restart').disabled = false;
+            document.getElementById('btn-restart').textContent = '🔄 Restart Bot';
+          }, 15000);
+        } else {
+          errEl.textContent = data.message || 'Gagal restart.';
+        }
+      } catch (e) {
+        errEl.textContent = 'Koneksi error. Coba lagi.';
+      }
+
+      btn.disabled = false;
+      btn.textContent = 'Restart';
+    }
   </script>
 </body>
 </html>`);
