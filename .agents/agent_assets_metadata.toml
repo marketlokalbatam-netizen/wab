@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "Usr4eXEZ7uT6mUuGSvZX-"
+uri = "file://DEPLOYMENT.md"
+type = "text"
+title = "Panduan Deploy VPS — Bot Setoran Harian"

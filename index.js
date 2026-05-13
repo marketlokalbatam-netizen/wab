@@ -33,6 +33,19 @@ setInterval(() => {
     for (const [token, exp] of sessions) { if (now > exp) sessions.delete(token); }
 }, 60 * 60 * 1000);
 
+// ================= ACTIVITY LOG =================
+const LOG_MAX = 200;
+const botLog = [];
+const sseClients = new Set();
+
+function pushLog(type, text) {
+    const entry = { t: Date.now(), type, text };
+    botLog.push(entry);
+    if (botLog.length > LOG_MAX) botLog.shift();
+    const payload = `data: ${JSON.stringify(entry)}\n\n`;
+    for (const cl of sseClients) { try { cl.write(payload); } catch (_) {} }
+}
+
 // ================= STARTUP BANNER =================
 console.log("\n=================================");
 console.log("   BOT SETORAN - STARTING UP");
@@ -133,6 +146,180 @@ app.post("/api/verify-password", requireAuth, (req, res) => {
     const { password } = req.body || {};
     if (!password || password !== RESTART_PASSWORD) return res.status(401).json({ ok: false, message: "Password salah." });
     res.json({ ok: true });
+});
+
+// ================= LOGS SSE =================
+app.get("/api/logs/stream", requireAuth, (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+    res.write(`data: ${JSON.stringify({ type: "init", log: botLog })}\n\n`);
+    sseClients.add(res);
+    req.on("close", () => sseClients.delete(res));
+});
+
+// ================= LOGS PAGE =================
+app.get("/logs", requireAuth, (req, res) => {
+    res.send(`<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Log Aktivitas — Bot Setoran</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0f1117;font-family:'Segoe UI',system-ui,sans-serif;color:#e2e8f0;min-height:100vh}
+    .topbar{display:flex;align-items:center;gap:14px;padding:14px 20px;
+      background:#1a1d2e;border-bottom:1px solid #2d3148;position:sticky;top:0;z-index:10}
+    .topbar a{color:#6366f1;text-decoration:none;font-size:0.85rem}
+    .topbar a:hover{text-decoration:underline}
+    h1{font-size:1rem;font-weight:700;color:#f8fafc;flex:1}
+    .badge-live{background:#16a34a22;color:#4ade80;border:1px solid #16a34a;
+      font-size:0.7rem;padding:2px 8px;border-radius:20px;display:flex;align-items:center;gap:5px}
+    .dot{width:6px;height:6px;border-radius:50%;background:#4ade80;
+      animation:pulse 1.5s infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+    .controls{display:flex;gap:8px;padding:10px 20px;background:#12151f;
+      border-bottom:1px solid #1e2235;align-items:center}
+    .btn-clear{background:#1e2235;border:1px solid #2d3148;color:#94a3b8;
+      padding:5px 12px;border-radius:6px;font-size:0.78rem;cursor:pointer}
+    .btn-clear:hover{background:#2d3148}
+    .filter-btns{display:flex;gap:6px;flex-wrap:wrap}
+    .filter-btn{padding:4px 10px;border-radius:6px;font-size:0.75rem;cursor:pointer;
+      border:1px solid transparent;transition:all 0.15s}
+    .filter-btn.active{opacity:1!important}
+    .filter-btn{opacity:0.55}
+    .fb-all{background:#1e2235;border-color:#2d3148;color:#94a3b8}
+    .fb-all.active{border-color:#6366f1;color:#6366f1}
+    .fb-msg{background:#2e1d5e22;border-color:#6d28d9;color:#a78bfa}
+    .fb-msg.active{background:#2e1d5e;border-color:#7c3aed;color:#c4b5fd}
+    .fb-ok{background:#14532d22;border-color:#15803d;color:#4ade80}
+    .fb-ok.active{background:#14532d;border-color:#16a34a;color:#86efac}
+    .fb-warn{background:#78350f22;border-color:#b45309;color:#fbbf24}
+    .fb-warn.active{background:#78350f;border-color:#d97706;color:#fde68a}
+    .fb-error{background:#7f1d1d22;border-color:#b91c1c;color:#f87171}
+    .fb-error.active{background:#7f1d1d;border-color:#dc2626;color:#fca5a5}
+    .fb-info{background:#1e3a5f22;border-color:#1d4ed8;color:#60a5fa}
+    .fb-info.active{background:#1e3a5f;border-color:#2563eb;color:#93c5fd}
+    #log-container{padding:10px 16px;display:flex;flex-direction:column;gap:4px;
+      padding-bottom:80px}
+    .log-entry{display:flex;align-items:flex-start;gap:10px;padding:8px 12px;
+      border-radius:8px;background:#12151f;border:1px solid #1e2235;
+      font-size:0.8rem;line-height:1.5;transition:background 0.2s;animation:fadeIn 0.25s ease}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+    .log-entry:hover{background:#1a1d2e}
+    .log-time{color:#475569;white-space:nowrap;font-size:0.72rem;padding-top:1px;min-width:52px}
+    .log-badge{padding:1px 7px;border-radius:4px;font-size:0.68rem;font-weight:700;
+      text-transform:uppercase;white-space:nowrap}
+    .badge-msg{background:#2e1d5e;color:#c4b5fd}
+    .badge-ok{background:#14532d;color:#86efac}
+    .badge-warn{background:#78350f;color:#fde68a}
+    .badge-error{background:#7f1d1d;color:#fca5a5}
+    .badge-info{background:#1e3a5f;color:#93c5fd}
+    .log-text{color:#cbd5e1;flex:1;word-break:break-word}
+    .empty{text-align:center;color:#334155;padding:60px 20px;font-size:0.85rem}
+    .scroll-btn{position:fixed;bottom:20px;right:20px;background:#6366f1;color:#fff;
+      border:none;border-radius:50%;width:40px;height:40px;font-size:1.2rem;cursor:pointer;
+      display:none;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(99,102,241,0.4)}
+    .scroll-btn.show{display:flex}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <a href="/">← Panel</a>
+    <h1>📋 Log Aktivitas Bot</h1>
+    <div class="badge-live" id="live-badge"><div class="dot"></div> Live</div>
+  </div>
+  <div class="controls">
+    <div class="filter-btns">
+      <button class="filter-btn fb-all active" data-filter="all">Semua</button>
+      <button class="filter-btn fb-msg" data-filter="msg">💬 Pesan</button>
+      <button class="filter-btn fb-ok" data-filter="ok">✅ Valid</button>
+      <button class="filter-btn fb-warn" data-filter="warn">⚠️ Tidak Valid</button>
+      <button class="filter-btn fb-error" data-filter="error">❌ Error</button>
+      <button class="filter-btn fb-info" data-filter="info">ℹ️ Info</button>
+    </div>
+    <button class="btn-clear" onclick="clearLog()">Bersihkan</button>
+  </div>
+  <div id="log-container"><div class="empty" id="empty-msg">Belum ada log. Bot sedang menunggu pesan...</div></div>
+  <button class="scroll-btn" id="scroll-btn" title="Scroll ke bawah" onclick="scrollToBottom()">↓</button>
+
+  <script>
+    let activeFilter = 'all';
+    let entries = [];
+    let autoScroll = true;
+
+    const container = document.getElementById('log-container');
+    const emptyMsg  = document.getElementById('empty-msg');
+    const scrollBtn = document.getElementById('scroll-btn');
+
+    function timeStr(ts) {
+      const d = new Date(ts);
+      return d.toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    }
+    function badgeClass(type) {
+      return 'badge-' + ({'msg':'msg','ok':'ok','warn':'warn','error':'error','info':'info'}[type] || 'info');
+    }
+    function badgeLabel(type) {
+      return {'msg':'MSG','ok':'OK','warn':'WARN','error':'ERR','info':'INFO'}[type] || type.toUpperCase();
+    }
+    function renderEntry(e) {
+      const el = document.createElement('div');
+      el.className = 'log-entry';
+      el.dataset.type = e.type;
+      el.style.display = (activeFilter === 'all' || activeFilter === e.type) ? 'flex' : 'none';
+      el.innerHTML = \`<span class="log-time">\${timeStr(e.t)}</span>
+        <span class="log-badge \${badgeClass(e.type)}">\${badgeLabel(e.type)}</span>
+        <span class="log-text">\${e.text.replace(/</g,'&lt;')}</span>\`;
+      return el;
+    }
+    function addEntry(e, prepend = false) {
+      if (emptyMsg) emptyMsg.remove();
+      const el = renderEntry(e);
+      if (prepend) { container.prepend(el); } else { container.appendChild(el); }
+      if (autoScroll && !prepend) scrollToBottom();
+    }
+    function scrollToBottom() { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); }
+    function clearLog() { container.innerHTML = '<div class="empty" id="empty-msg">Log dibersihkan. Menunggu pesan baru...</div>'; entries = []; }
+
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        activeFilter = btn.dataset.filter;
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        document.querySelectorAll('.log-entry').forEach(el => {
+          el.style.display = (activeFilter === 'all' || activeFilter === el.dataset.type) ? 'flex' : 'none';
+        });
+      });
+    });
+
+    window.addEventListener('scroll', () => {
+      const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
+      autoScroll = nearBottom;
+      scrollBtn.classList.toggle('show', !nearBottom && entries.length > 10);
+    });
+
+    const liveBadge = document.getElementById('live-badge');
+    function connectSSE() {
+      const es = new EventSource('/api/logs/stream');
+      es.onopen = () => { liveBadge.style.display = 'flex'; };
+      es.onerror = () => { liveBadge.style.display = 'none'; setTimeout(connectSSE, 3000); };
+      es.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'init') {
+          data.log.forEach(e => { entries.push(e); addEntry(e); });
+          if (autoScroll) scrollToBottom();
+        } else {
+          entries.push(data);
+          addEntry(data);
+        }
+      };
+    }
+    connectSSE();
+  </script>
+</body>
+</html>`);
 });
 
 // ================= API RESTART =================
@@ -542,6 +729,8 @@ app.get("/", requireAuth, (req, res) => {
   </div>
 
   <div class="footer">Bot Setoran &copy; ${new Date().getFullYear()} &nbsp;·&nbsp;
+    <a href="/logs" style="color:#6366f1;text-decoration:none;font-size:0.78rem;">📋 Log Aktivitas</a>
+    &nbsp;·&nbsp;
     <a href="#" onclick="logoutPanel()" style="color:#64748b;text-decoration:none;font-size:0.78rem;">Keluar Panel</a>
   </div>
 
@@ -871,6 +1060,7 @@ client.on("qr", async (qr) => {
     qrcode.generate(qr, { small: true });
     state.status = "qr";
     state.qrDataUrl = await QRCode.toDataURL(qr, { width: 300, margin: 2 });
+    pushLog("info", "QR code baru digenerate — menunggu scan dari WhatsApp.");
 });
 
 // ================= READY =================
@@ -878,14 +1068,17 @@ client.on("ready", async () => {
     console.log("✅ BOT SIAP");
     state.status = "ready";
     state.qrDataUrl = null;
+    pushLog("ok", "Bot WhatsApp siap dan terhubung.");
 
     try {
         const conn = await db.getConnection();
         console.log("✅ DATABASE CONNECTED");
         conn.release();
+        pushLog("ok", "Koneksi database berhasil.");
     } catch (err) {
         console.log("❌ DATABASE ERROR");
         console.log(err);
+        pushLog("error", "Koneksi database gagal: " + (err?.message || err));
     }
 });
 
@@ -898,6 +1091,7 @@ client.on("auth_failure", (msg) => {
     console.log("❌ AUTH FAILED", msg);
     state.status = "auth_failure";
     state.qrDataUrl = null;
+    pushLog("error", "Autentikasi WhatsApp gagal: " + msg);
 });
 
 // ================= LOADING =================
@@ -910,6 +1104,7 @@ client.on("disconnected", (reason) => {
     console.log("[DISCONNECTED]", reason);
     state.status = "disconnected";
     state.qrDataUrl = null;
+    pushLog("warn", "Bot terputus: " + reason + " — mencoba reconnect dalam 5 detik...");
     console.log("[RECONNECT] Mencoba reconnect dalam 5 detik...");
     setTimeout(() => {
         cleanLocks();
@@ -1005,10 +1200,12 @@ client.on("message", async (message) => {
 
         if (message.body.toLowerCase().startsWith("/summary")) {
             const args = message.body.trim().split(/\s+/).slice(1);
+            pushLog("msg", `Perintah /summary diterima dari grup ${message.from}`);
             return await handleSummary(message, args);
         }
 
         if (!message.body.includes("Setoran Harian")) return;
+        pushLog("msg", `Laporan masuk dari grup ${message.from}: "${message.body.substring(0, 60).replace(/\n/g, ' ')}..."`);
 
         const body = message.body;
 
@@ -1067,6 +1264,7 @@ client.on("message", async (message) => {
         console.log("TANGGAL BOT :", tanggalDB);
 
         if (!rows.length) {
+            pushLog("warn", `Data tidak ditemukan — Nama: ${nama}, Tanggal: ${tanggalDB}`);
             return await message.reply(
                 `❌ Data tidak ditemukan untuk *${nama}*\n` +
                 `📅 Tanggal : ${tanggalLaporan}\n` +
@@ -1107,6 +1305,7 @@ client.on("message", async (message) => {
 
         if (valid) {
             console.log("[REPLY] Mengirim balasan VALID...");
+            pushLog("ok", `Laporan VALID — ${nama} | Tanggal: ${tanggalLaporan} | Shift: ${shift}`);
             await message.reply(
                 `✅ Laporan Pas ${nama}
 📅 Tanggal : ${tanggalLaporan}
@@ -1124,6 +1323,7 @@ client.on("message", async (message) => {
             );
         } else {
             console.log("[REPLY] Mengirim balasan TIDAK VALID...");
+            pushLog("warn", `Laporan TIDAK VALID — ${nama} | Tanggal: ${tanggalLaporan} | Shift: ${shift}`);
 
             const selisihLiter       = totalLiter - Number(dbData.total_liter);
             const selisihCash        = cash - Number(dbData.cash);
@@ -1189,6 +1389,7 @@ TATA CARA TAHAPAN LAPORAN CLOSING :
     } catch (err) {
         console.log("[ERROR]", err?.message || err);
         console.log(err?.stack || "");
+        pushLog("error", "Error saat memproses laporan: " + (err?.message || err));
         try { await message.reply("⚠️ Format laporan / error"); } catch(e) { console.log("[REPLY GAGAL]", e?.message); }
     }
 });

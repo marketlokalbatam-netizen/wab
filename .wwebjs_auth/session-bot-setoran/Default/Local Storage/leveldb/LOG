@@ -1,3 +1,6 @@
-2026/05/13-11:26:26.015 1642 Reusing MANIFEST /home/runner/workspace/.wwebjs_auth/session-bot-setoran/Default/Local Storage/leveldb/MANIFEST-000001
-2026/05/13-11:26:26.021 1642 Recovering log #3
-2026/05/13-11:26:26.022 1642 Reusing old log /home/runner/workspace/.wwebjs_auth/session-bot-setoran/Default/Local Storage/leveldb/000003.log 
+2026/05/13-11:41:00.756 1c61 Reusing MANIFEST /home/runner/workspace/.wwebjs_auth/session-bot-setoran/Default/Local Storage/leveldb/MANIFEST-000001
+2026/05/13-11:41:00.766 1c61 Recovering log #3
+2026/05/13-11:41:00.767 1c61 Reusing old log /home/runner/workspace/.wwebjs_auth/session-bot-setoran/Default/Local Storage/leveldb/000003.log 
+2026/05/13-11:42:00.770 1c62 Level-0 table #5: started
+2026/05/13-11:42:00.792 1c62 Level-0 table #5: 20258 bytes OK
+2026/05/13-11:42:00.797 1c62 Delete type=0 #3
