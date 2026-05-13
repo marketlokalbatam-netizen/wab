@@ -32,15 +32,22 @@ app.get("/api/qr", (req, res) => {
 });
 
 // ================= API RESTART =================
-app.post("/api/restart", async (req, res) => {
+function checkPassword(req, res) {
     const RESTART_PASSWORD = process.env.RESTART_PASSWORD;
     if (!RESTART_PASSWORD) {
-        return res.status(503).json({ ok: false, message: "RESTART_PASSWORD belum diset di server." });
+        res.status(503).json({ ok: false, message: "RESTART_PASSWORD belum diset di server." });
+        return false;
     }
     const { password } = req.body || {};
     if (!password || password !== RESTART_PASSWORD) {
-        return res.status(401).json({ ok: false, message: "Password salah." });
+        res.status(401).json({ ok: false, message: "Password salah." });
+        return false;
     }
+    return true;
+}
+
+app.post("/api/restart", async (req, res) => {
+    if (!checkPassword(req, res)) return;
     res.json({ ok: true, message: "Restart sedang diproses..." });
     console.log("[RESTART] Permintaan restart diterima.");
     state.status = "starting";
@@ -58,6 +65,36 @@ app.post("/api/restart", async (req, res) => {
             console.log("[RESTART] Client diinisialisasi ulang.");
         } catch (err) {
             console.log("[RESTART] Gagal reinisialisasi:", err?.message || err);
+            state.status = "disconnected";
+        }
+    }, 3000);
+});
+
+app.post("/api/logout", async (req, res) => {
+    if (!checkPassword(req, res)) return;
+    res.json({ ok: true, message: "Logout sedang diproses..." });
+    console.log("[LOGOUT] Permintaan logout diterima.");
+    state.status = "starting";
+    state.qrDataUrl = null;
+    try {
+        await client.logout();
+        console.log("[LOGOUT] Sesi WhatsApp dihapus.");
+    } catch (e) {
+        console.log("[LOGOUT] logout error (diabaikan):", e?.message);
+    }
+    try {
+        await client.destroy();
+        console.log("[LOGOUT] Client dihancurkan.");
+    } catch (e) {
+        console.log("[LOGOUT] destroy error (diabaikan):", e?.message);
+    }
+    setTimeout(async () => {
+        cleanLocks();
+        try {
+            await client.initialize();
+            console.log("[LOGOUT] Client diinisialisasi ulang — scan QR baru.");
+        } catch (err) {
+            console.log("[LOGOUT] Gagal reinisialisasi:", err?.message || err);
             state.status = "disconnected";
         }
     }, 3000);
@@ -234,6 +271,17 @@ app.get("/", (req, res) => {
       cursor: not-allowed;
     }
 
+    .btn-logout {
+      border-color: #5a1e1e;
+      background: #2d1414;
+      color: #f87171;
+    }
+    .btn-logout:hover {
+      background: #3d1a1a;
+      color: #fca5a5;
+      border-color: #dc2626;
+    }
+
     .modal-overlay {
       display: none;
       position: fixed;
@@ -360,7 +408,10 @@ app.get("/", (req, res) => {
     </div>
 
     <p class="refresh-note">Halaman diperbarui otomatis setiap 3 detik</p>
-    <button class="btn-restart" id="btn-restart" onclick="openModal()">🔄 Restart Bot</button>
+    <div style="display:flex;gap:10px;margin-top:20px;">
+      <button class="btn-restart" id="btn-restart" style="margin-top:0;flex:1" onclick="openModal('restart')">🔄 Restart Bot</button>
+      <button class="btn-restart btn-logout" id="btn-logout" style="margin-top:0;flex:1" onclick="openModal('logout')">🚪 Logout Sesi</button>
+    </div>
   </div>
 
   <div class="footer">Bot Setoran &copy; ${new Date().getFullYear()}</div>
@@ -368,13 +419,13 @@ app.get("/", (req, res) => {
   <!-- MODAL PASSWORD -->
   <div class="modal-overlay" id="modal-overlay">
     <div class="modal">
-      <h2>🔒 Konfirmasi Restart</h2>
-      <p>Masukkan password admin untuk melanjutkan restart bot.</p>
+      <h2 id="modal-title">🔒 Konfirmasi</h2>
+      <p id="modal-desc">Masukkan password admin untuk melanjutkan.</p>
       <input type="password" id="modal-pass" placeholder="Password..." />
       <div id="modal-error"></div>
       <div class="modal-actions">
         <button class="btn-cancel" onclick="closeModal()">Batal</button>
-        <button class="btn-confirm" id="btn-confirm" onclick="doRestart()">Restart</button>
+        <button class="btn-confirm" id="btn-confirm" onclick="doAction()">Lanjutkan</button>
       </div>
     </div>
   </div>
@@ -447,10 +498,26 @@ app.get("/", (req, res) => {
     poll();
     setInterval(poll, 3000);
 
-    // ===== MODAL RESTART =====
-    function openModal() {
+    // ===== MODAL (RESTART & LOGOUT) =====
+    let currentAction = 'restart';
+
+    function openModal(action) {
+      currentAction = action;
       document.getElementById('modal-pass').value = '';
       document.getElementById('modal-error').textContent = '';
+
+      if (action === 'logout') {
+        document.getElementById('modal-title').textContent = '🚪 Konfirmasi Logout';
+        document.getElementById('modal-desc').textContent = 'Sesi WhatsApp akan dihapus dan bot akan minta scan QR ulang. Masukkan password admin.';
+        document.getElementById('btn-confirm').textContent = 'Logout';
+        document.getElementById('btn-confirm').style.background = '#dc2626';
+      } else {
+        document.getElementById('modal-title').textContent = '🔒 Konfirmasi Restart';
+        document.getElementById('modal-desc').textContent = 'Bot akan direstart. Masukkan password admin untuk melanjutkan.';
+        document.getElementById('btn-confirm').textContent = 'Restart';
+        document.getElementById('btn-confirm').style.background = '#6366f1';
+      }
+
       document.getElementById('modal-overlay').classList.add('open');
       setTimeout(() => document.getElementById('modal-pass').focus(), 100);
     }
@@ -465,10 +532,10 @@ app.get("/", (req, res) => {
 
     document.addEventListener('keydown', function(e) {
       if (e.key === 'Escape') closeModal();
-      if (e.key === 'Enter' && document.getElementById('modal-overlay').classList.contains('open')) doRestart();
+      if (e.key === 'Enter' && document.getElementById('modal-overlay').classList.contains('open')) doAction();
     });
 
-    async function doRestart() {
+    async function doAction() {
       const pass = document.getElementById('modal-pass').value.trim();
       const errEl = document.getElementById('modal-error');
       const btn = document.getElementById('btn-confirm');
@@ -482,8 +549,10 @@ app.get("/", (req, res) => {
       btn.textContent = 'Memproses...';
       errEl.textContent = '';
 
+      const endpoint = currentAction === 'logout' ? '/api/logout' : '/api/restart';
+
       try {
-        const res = await fetch('/api/restart', {
+        const res = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ password: pass }),
@@ -492,21 +561,31 @@ app.get("/", (req, res) => {
 
         if (data.ok) {
           closeModal();
-          document.getElementById('btn-restart').disabled = true;
-          document.getElementById('btn-restart').textContent = '🔄 Restarting...';
-          setTimeout(() => {
-            document.getElementById('btn-restart').disabled = false;
-            document.getElementById('btn-restart').textContent = '🔄 Restart Bot';
-          }, 15000);
+          if (currentAction === 'restart') {
+            document.getElementById('btn-restart').disabled = true;
+            document.getElementById('btn-restart').textContent = '🔄 Restarting...';
+            setTimeout(() => {
+              document.getElementById('btn-restart').disabled = false;
+              document.getElementById('btn-restart').textContent = '🔄 Restart Bot';
+            }, 15000);
+          } else {
+            document.getElementById('btn-logout').disabled = true;
+            document.getElementById('btn-logout').textContent = '🚪 Logging out...';
+            setTimeout(() => {
+              document.getElementById('btn-logout').disabled = false;
+              document.getElementById('btn-logout').textContent = '🚪 Logout Sesi';
+            }, 15000);
+          }
         } else {
-          errEl.textContent = data.message || 'Gagal restart.';
+          errEl.textContent = data.message || 'Gagal. Coba lagi.';
+          btn.disabled = false;
+          btn.textContent = currentAction === 'logout' ? 'Logout' : 'Restart';
         }
       } catch (e) {
         errEl.textContent = 'Koneksi error. Coba lagi.';
+        btn.disabled = false;
+        btn.textContent = currentAction === 'logout' ? 'Logout' : 'Restart';
       }
-
-      btn.disabled = false;
-      btn.textContent = 'Restart';
     }
   </script>
 </body>
