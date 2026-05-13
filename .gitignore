@@ -1,0 +1,15 @@
+# Mengabaikan file log
+*.log
+
+# Mengabaikan folder node_modules
+node_modules/
+attached_assets/
+
+# Mengabaikan file lingkungan (rahasia)
+.env
+.config
+.agents
+.wwebjs_auth
+.wwebjs_cache
+# Mengabaikan folder build
+dist/
