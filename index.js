@@ -17,7 +17,7 @@ const fs = require("fs");
 // ================= EXPRESS UI SERVER =================
 const app = express();
 app.use(express.json());
-const PORT = process.env.PORT || 65002;
+const PORT = process.env.PORT || 3000;
 
 app.get("/api/status", (req, res) => {
     res.json({ status: state.status });
@@ -508,7 +508,7 @@ app.get("/", (req, res) => {
 </html>`);
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
     console.log("[SERVER] UI berjalan di port " + PORT);
 });
 
@@ -541,6 +541,8 @@ const client = new Client({
     }),
     puppeteer: {
         headless: true,
+        executablePath: process.env.CHROMIUM_PATH ||
+            "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium",
         args: [
             "--no-sandbox",
             "--disable-setuid-sandbox",
