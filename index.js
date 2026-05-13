@@ -51,10 +51,15 @@ app.post("/api/restart", async (req, res) => {
     } catch (e) {
         console.log("[RESTART] destroy error (diabaikan):", e?.message);
     }
-    setTimeout(() => {
+    setTimeout(async () => {
         cleanLocks();
-        client.initialize();
-        console.log("[RESTART] Client diinisialisasi ulang.");
+        try {
+            await client.initialize();
+            console.log("[RESTART] Client diinisialisasi ulang.");
+        } catch (err) {
+            console.log("[RESTART] Gagal reinisialisasi:", err?.message || err);
+            state.status = "disconnected";
+        }
     }, 3000);
 });
 
@@ -541,8 +546,13 @@ const client = new Client({
     }),
     puppeteer: {
         headless: true,
-        executablePath: process.env.CHROMIUM_PATH ||
-            "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium",
+        ...((() => {
+            const custom = process.env.CHROMIUM_PATH;
+            const replit = "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium";
+            if (custom) return { executablePath: custom };
+            if (fs.existsSync(replit)) return { executablePath: replit };
+            return {};
+        })()),
         args: [
             "--no-sandbox",
             "--disable-setuid-sandbox",
@@ -897,5 +907,23 @@ TATA CARA TAHAPAN LAPORAN CLOSING :
     }
 });
 
+// ================= GLOBAL ERROR HANDLER =================
+process.on("uncaughtException", (err) => {
+    console.log("[UNCAUGHT EXCEPTION]", err?.message || err);
+    console.log(err?.stack || "");
+    state.status = "disconnected";
+});
+
+process.on("unhandledRejection", (reason) => {
+    console.log("[UNHANDLED REJECTION]", reason?.message || reason);
+});
+
 // ================= START =================
-client.initialize();
+(async () => {
+    try {
+        await client.initialize();
+    } catch (err) {
+        console.log("[INIT ERROR] Gagal inisialisasi WhatsApp client:", err?.message || err);
+        state.status = "disconnected";
+    }
+})();
