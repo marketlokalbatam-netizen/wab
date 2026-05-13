@@ -32,3 +32,13 @@ outputType = "webview"
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[userenv]
+
+[userenv.shared]
+RESTART_PASSWORD = "123"
+DB_HOST = "srv1412.hstgr.io"
+DB_NAME = "u215947863_pom"
+DB_USER = "u215947863_pom"
+DB_PORT = "3306"
+DB_PASSWORD = "marketLokal2611@"

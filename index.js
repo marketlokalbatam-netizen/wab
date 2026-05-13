@@ -70,6 +70,15 @@ app.post("/api/restart", async (req, res) => {
     }, 3000);
 });
 
+app.post("/api/restart-server", async (req, res) => {
+    if (!checkPassword(req, res)) return;
+    res.json({ ok: true, message: "Server akan direstart dalam 2 detik..." });
+    console.log("[RESTART-SERVER] Permintaan restart server diterima. Proses akan exit...");
+    setTimeout(() => {
+        process.exit(0);
+    }, 2000);
+});
+
 app.post("/api/logout", async (req, res) => {
     if (!checkPassword(req, res)) return;
     res.json({ ok: true, message: "Logout sedang diproses..." });
@@ -282,6 +291,19 @@ app.get("/", (req, res) => {
       border-color: #dc2626;
     }
 
+    .btn-server {
+      border-color: #3d2e00;
+      background: #241a00;
+      color: #fbbf24;
+      width: 100%;
+      margin-top: 8px;
+    }
+    .btn-server:hover {
+      background: #3a2800;
+      color: #fcd34d;
+      border-color: #d97706;
+    }
+
     .modal-overlay {
       display: none;
       position: fixed;
@@ -412,6 +434,7 @@ app.get("/", (req, res) => {
       <button class="btn-restart" id="btn-restart" style="margin-top:0;flex:1" onclick="openModal('restart')">🔄 Restart Bot</button>
       <button class="btn-restart btn-logout" id="btn-logout" style="margin-top:0;flex:1" onclick="openModal('logout')">🚪 Logout Sesi</button>
     </div>
+    <button class="btn-restart btn-server" id="btn-server" onclick="openModal('server')">⚡ Restart Server</button>
   </div>
 
   <div class="footer">Bot Setoran &copy; ${new Date().getFullYear()}</div>
@@ -511,6 +534,11 @@ app.get("/", (req, res) => {
         document.getElementById('modal-desc').textContent = 'Sesi WhatsApp akan dihapus dan bot akan minta scan QR ulang. Masukkan password admin.';
         document.getElementById('btn-confirm').textContent = 'Logout';
         document.getElementById('btn-confirm').style.background = '#dc2626';
+      } else if (action === 'server') {
+        document.getElementById('modal-title').textContent = '⚡ Konfirmasi Restart Server';
+        document.getElementById('modal-desc').textContent = 'Seluruh proses server akan direstart. Panel akan tidak tersedia sebentar. Masukkan password admin.';
+        document.getElementById('btn-confirm').textContent = 'Restart Server';
+        document.getElementById('btn-confirm').style.background = '#d97706';
       } else {
         document.getElementById('modal-title').textContent = '🔒 Konfirmasi Restart';
         document.getElementById('modal-desc').textContent = 'Bot akan direstart. Masukkan password admin untuk melanjutkan.';
@@ -549,7 +577,7 @@ app.get("/", (req, res) => {
       btn.textContent = 'Memproses...';
       errEl.textContent = '';
 
-      const endpoint = currentAction === 'logout' ? '/api/logout' : '/api/restart';
+      const endpoint = currentAction === 'logout' ? '/api/logout' : currentAction === 'server' ? '/api/restart-server' : '/api/restart';
 
       try {
         const res = await fetch(endpoint, {
@@ -568,23 +596,32 @@ app.get("/", (req, res) => {
               document.getElementById('btn-restart').disabled = false;
               document.getElementById('btn-restart').textContent = '🔄 Restart Bot';
             }, 15000);
-          } else {
+          } else if (currentAction === 'logout') {
             document.getElementById('btn-logout').disabled = true;
             document.getElementById('btn-logout').textContent = '🚪 Logging out...';
             setTimeout(() => {
               document.getElementById('btn-logout').disabled = false;
               document.getElementById('btn-logout').textContent = '🚪 Logout Sesi';
             }, 15000);
+          } else if (currentAction === 'server') {
+            document.getElementById('btn-server').disabled = true;
+            document.getElementById('btn-server').textContent = '⚡ Server restarting...';
+            setTimeout(() => {
+              document.getElementById('btn-server').disabled = false;
+              document.getElementById('btn-server').textContent = '⚡ Restart Server';
+            }, 20000);
           }
         } else {
+          const labels = { restart: 'Restart', logout: 'Logout', server: 'Restart Server' };
           errEl.textContent = data.message || 'Gagal. Coba lagi.';
           btn.disabled = false;
-          btn.textContent = currentAction === 'logout' ? 'Logout' : 'Restart';
+          btn.textContent = labels[currentAction] || 'Lanjutkan';
         }
       } catch (e) {
+        const labels = { restart: 'Restart', logout: 'Logout', server: 'Restart Server' };
         errEl.textContent = 'Koneksi error. Coba lagi.';
         btn.disabled = false;
-        btn.textContent = currentAction === 'logout' ? 'Logout' : 'Restart';
+        btn.textContent = labels[currentAction] || 'Lanjutkan';
       }
     }
   </script>
