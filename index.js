@@ -1,7 +1,37 @@
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const express = require("express");
 const http = require("http");
+const crypto = require("crypto");
 const state = require("./state");
+
+// ================= SESSION STORE =================
+const sessions = new Map();
+const SESSION_COOKIE = "pbot_sid";
+const SESSION_TTL = 24 * 60 * 60 * 1000; // 24 jam
+
+function genToken() {
+    return crypto.randomBytes(32).toString("hex");
+}
+function parseCookies(req) {
+    const raw = req.headers.cookie || "";
+    return Object.fromEntries(raw.split(";").map(c => c.trim().split("=").map(decodeURIComponent)));
+}
+function getSession(req) {
+    const token = parseCookies(req)[SESSION_COOKIE];
+    if (!token) return false;
+    const exp = sessions.get(token);
+    if (!exp || Date.now() > exp) { sessions.delete(token); return false; }
+    return token;
+}
+function requireAuth(req, res, next) {
+    if (getSession(req)) return next();
+    if (req.method === "GET") return res.redirect("/login");
+    res.status(401).json({ ok: false, message: "Sesi habis. Silakan login ulang." });
+}
+setInterval(() => {
+    const now = Date.now();
+    for (const [token, exp] of sessions) { if (now > exp) sessions.delete(token); }
+}, 60 * 60 * 1000);
 
 // ================= STARTUP BANNER =================
 console.log("\n=================================");
@@ -19,16 +49,90 @@ const app = express();
 app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
-app.get("/api/status", (req, res) => {
+// ================= LOGIN PAGE =================
+app.get("/login", (req, res) => {
+    if (getSession(req)) return res.redirect("/");
+    const err = req.query.err || "";
+    res.send(`<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Login — Bot Setoran</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{min-height:100vh;display:flex;align-items:center;justify-content:center;
+      background:#0f1117;font-family:'Segoe UI',system-ui,sans-serif;padding:24px}
+    .card{background:#1a1d2e;border:1px solid #2d3148;border-radius:20px;
+      padding:40px 36px;width:100%;max-width:380px;text-align:center;
+      box-shadow:0 8px 40px rgba(0,0,0,0.4)}
+    .logo{font-size:2.4rem;margin-bottom:8px}
+    h1{font-size:1.15rem;font-weight:700;color:#f8fafc;margin-bottom:4px}
+    .sub{font-size:0.82rem;color:#64748b;margin-bottom:28px}
+    input[type=password]{width:100%;padding:11px 14px;border-radius:10px;
+      border:1px solid #2d3148;background:#0f1117;color:#e2e8f0;
+      font-size:0.95rem;outline:none;margin-bottom:12px}
+    input[type=password]:focus{border-color:#6366f1}
+    .err{color:#f87171;font-size:0.8rem;margin-bottom:12px;min-height:18px}
+    button{width:100%;padding:11px;border-radius:10px;border:none;
+      background:#6366f1;color:#fff;font-size:0.9rem;font-weight:600;
+      cursor:pointer;transition:background 0.2s}
+    button:hover{background:#4f52d0}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">⛽</div>
+    <h1>Bot Setoran Harian</h1>
+    <p class="sub">Masukkan password untuk mengakses panel</p>
+    ${err ? `<div class="err">❌ ${err}</div>` : `<div class="err"></div>`}
+    <form method="POST" action="/api/login">
+      <input type="password" name="password" placeholder="Password..." autofocus autocomplete="current-password"/>
+      <button type="submit">Masuk</button>
+    </form>
+  </div>
+</body>
+</html>`);
+});
+
+app.post("/api/login", express.urlencoded({ extended: false }), (req, res) => {
+    const PANEL_PASSWORD = process.env.PANEL_PASSWORD || process.env.RESTART_PASSWORD;
+    if (!PANEL_PASSWORD) return res.redirect("/login?err=PANEL_PASSWORD+belum+diset");
+    const { password } = req.body || {};
+    if (!password || password !== PANEL_PASSWORD) return res.redirect("/login?err=Password+salah");
+    const token = genToken();
+    sessions.set(token, Date.now() + SESSION_TTL);
+    res.setHeader("Set-Cookie", `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; Max-Age=86400; SameSite=Lax`);
+    res.redirect("/");
+});
+
+app.post("/api/logout-panel", (req, res) => {
+    const token = parseCookies(req)[SESSION_COOKIE];
+    if (token) sessions.delete(token);
+    res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; HttpOnly; Path=/; Max-Age=0`);
+    res.json({ ok: true });
+});
+
+// ================= PROTECTED APIs =================
+app.get("/api/status", requireAuth, (req, res) => {
     res.json({ status: state.status });
 });
 
-app.get("/api/qr", (req, res) => {
+app.get("/api/qr", requireAuth, (req, res) => {
     if (state.qrDataUrl) {
         res.json({ qr: state.qrDataUrl });
     } else {
         res.json({ qr: null });
     }
+});
+
+// ================= API VERIFY PASSWORD =================
+app.post("/api/verify-password", requireAuth, (req, res) => {
+    const RESTART_PASSWORD = process.env.RESTART_PASSWORD;
+    if (!RESTART_PASSWORD) return res.status(503).json({ ok: false, message: "RESTART_PASSWORD belum diset di server." });
+    const { password } = req.body || {};
+    if (!password || password !== RESTART_PASSWORD) return res.status(401).json({ ok: false, message: "Password salah." });
+    res.json({ ok: true });
 });
 
 // ================= API RESTART =================
@@ -46,7 +150,7 @@ function checkPassword(req, res) {
     return true;
 }
 
-app.post("/api/restart", async (req, res) => {
+app.post("/api/restart", requireAuth, async (req, res) => {
     if (!checkPassword(req, res)) return;
     res.json({ ok: true, message: "Restart sedang diproses..." });
     console.log("[RESTART] Permintaan restart diterima.");
@@ -70,7 +174,7 @@ app.post("/api/restart", async (req, res) => {
     }, 3000);
 });
 
-app.post("/api/restart-server", async (req, res) => {
+app.post("/api/restart-server", requireAuth, async (req, res) => {
     if (!checkPassword(req, res)) return;
     res.json({ ok: true, message: "Server akan direstart dalam 2 detik..." });
     console.log("[RESTART-SERVER] Permintaan restart server diterima. Proses akan exit...");
@@ -79,7 +183,7 @@ app.post("/api/restart-server", async (req, res) => {
     }, 2000);
 });
 
-app.post("/api/logout", async (req, res) => {
+app.post("/api/logout", requireAuth, async (req, res) => {
     if (!checkPassword(req, res)) return;
     res.json({ ok: true, message: "Logout sedang diproses..." });
     console.log("[LOGOUT] Permintaan logout diterima.");
@@ -109,7 +213,7 @@ app.post("/api/logout", async (req, res) => {
     }, 3000);
 });
 
-app.get("/", (req, res) => {
+app.get("/", requireAuth, (req, res) => {
     res.send(`<!DOCTYPE html>
 <html lang="id">
 <head>
@@ -437,18 +541,37 @@ app.get("/", (req, res) => {
     <button class="btn-restart btn-server" id="btn-server" onclick="openModal('server')">⚡ Restart Server</button>
   </div>
 
-  <div class="footer">Bot Setoran &copy; ${new Date().getFullYear()}</div>
+  <div class="footer">Bot Setoran &copy; ${new Date().getFullYear()} &nbsp;·&nbsp;
+    <a href="#" onclick="logoutPanel()" style="color:#64748b;text-decoration:none;font-size:0.78rem;">Keluar Panel</a>
+  </div>
 
-  <!-- MODAL PASSWORD -->
+  <!-- MODAL DUA LANGKAH -->
   <div class="modal-overlay" id="modal-overlay">
     <div class="modal">
       <h2 id="modal-title">🔒 Konfirmasi</h2>
-      <p id="modal-desc">Masukkan password admin untuk melanjutkan.</p>
-      <input type="password" id="modal-pass" placeholder="Password..." />
-      <div id="modal-error"></div>
-      <div class="modal-actions">
-        <button class="btn-cancel" onclick="closeModal()">Batal</button>
-        <button class="btn-confirm" id="btn-confirm" onclick="doAction()">Lanjutkan</button>
+
+      <!-- LANGKAH 1: Masukkan password -->
+      <div id="modal-step1">
+        <p id="modal-desc" style="margin-bottom:14px;color:#94a3b8;font-size:0.88rem;line-height:1.5"></p>
+        <input type="password" id="modal-pass" placeholder="Password admin..." />
+        <div id="modal-error-1" style="color:#f87171;font-size:0.8rem;min-height:18px;margin-bottom:6px"></div>
+        <div class="modal-actions">
+          <button class="btn-cancel" onclick="closeModal()">Batal</button>
+          <button class="btn-confirm" id="btn-step1-next" onclick="verifyPassword()">Verifikasi →</button>
+        </div>
+      </div>
+
+      <!-- LANGKAH 2: Konfirmasi akhir -->
+      <div id="modal-step2" style="display:none">
+        <p id="modal-confirm-text" style="margin-bottom:20px;color:#94a3b8;font-size:0.88rem;line-height:1.5;text-align:center"></p>
+        <div style="background:#1e1b2e;border:1px solid #3d3660;border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:0.82rem;color:#a78bfa;text-align:center">
+          ⚠️ Tindakan ini tidak dapat dibatalkan setelah dimulai.
+        </div>
+        <div id="modal-error-2" style="color:#f87171;font-size:0.8rem;min-height:18px;margin-bottom:6px"></div>
+        <div class="modal-actions">
+          <button class="btn-cancel" onclick="closeModal()">Batal</button>
+          <button class="btn-confirm" id="btn-execute" onclick="executeAction()">Ya, Lanjutkan</button>
+        </div>
       </div>
     </div>
   </div>
@@ -466,7 +589,6 @@ app.get("/", (req, res) => {
       const badge = document.getElementById('badge');
       const text  = document.getElementById('badge-text');
       badge.className = 'badge ' + status;
-
       const dot = badge.querySelector('.dot');
       const labels = {
         starting:     'Memulai...',
@@ -476,22 +598,16 @@ app.get("/", (req, res) => {
         auth_failure: 'Autentikasi Gagal',
       };
       text.textContent = labels[status] || status;
-
-      if (status === 'ready') {
-        dot.classList.remove('pulse');
-      } else {
-        dot.classList.add('pulse');
-      }
+      if (status === 'ready') { dot.classList.remove('pulse'); } else { dot.classList.add('pulse'); }
     }
 
     async function poll() {
       try {
         const res  = await fetch('/api/status');
+        if (res.status === 401) { window.location.href = '/login'; return; }
         const data = await res.json();
         const status = data.status;
-
         setBadge(status);
-
         if (status === 'qr') {
           showView('qr');
           const qrRes  = await fetch('/api/qr');
@@ -511,7 +627,6 @@ app.get("/", (req, res) => {
         } else {
           showView('loading');
         }
-
         lastStatus = status;
       } catch (e) {
         showView('loading');
@@ -521,31 +636,70 @@ app.get("/", (req, res) => {
     poll();
     setInterval(poll, 3000);
 
-    // ===== MODAL (RESTART & LOGOUT) =====
+    // ===== MODAL DUA LANGKAH =====
     let currentAction = 'restart';
+    let verifiedPassword = '';
+
+    const ACTION_CONFIG = {
+      restart: {
+        title: '🔄 Restart Bot',
+        desc:  'Bot WhatsApp akan direstart. Masukkan password admin untuk melanjutkan.',
+        confirm: 'Yakin ingin merestart bot WhatsApp sekarang?',
+        btnText: 'Ya, Restart Bot',
+        btnColor: '#6366f1',
+        execBtnId: 'btn-restart',
+        execLabel: '🔄 Restart Bot',
+        processingLabel: '🔄 Restarting...',
+        endpoint: '/api/restart',
+        timeout: 15000,
+      },
+      logout: {
+        title: '🚪 Logout Sesi WhatsApp',
+        desc:  'Sesi WhatsApp akan dihapus dan bot akan meminta scan QR ulang. Masukkan password admin.',
+        confirm: 'Yakin ingin logout sesi WhatsApp? Anda perlu scan QR lagi setelahnya.',
+        btnText: 'Ya, Logout Sekarang',
+        btnColor: '#dc2626',
+        execBtnId: 'btn-logout',
+        execLabel: '🚪 Logout Sesi',
+        processingLabel: '🚪 Logging out...',
+        endpoint: '/api/logout',
+        timeout: 15000,
+      },
+      server: {
+        title: '⚡ Restart Server',
+        desc:  'Seluruh proses server akan direstart. Panel akan offline sebentar. Masukkan password admin.',
+        confirm: 'Yakin ingin merestart seluruh proses server? Panel akan tidak tersedia sebentar.',
+        btnText: 'Ya, Restart Server',
+        btnColor: '#d97706',
+        execBtnId: 'btn-server',
+        execLabel: '⚡ Restart Server',
+        processingLabel: '⚡ Server restarting...',
+        endpoint: '/api/restart-server',
+        timeout: 20000,
+      },
+    };
 
     function openModal(action) {
       currentAction = action;
+      verifiedPassword = '';
+      const cfg = ACTION_CONFIG[action];
+
+      document.getElementById('modal-title').textContent = cfg.title;
+      document.getElementById('modal-desc').textContent  = cfg.desc;
       document.getElementById('modal-pass').value = '';
-      document.getElementById('modal-error').textContent = '';
+      document.getElementById('modal-error-1').textContent = '';
+      document.getElementById('modal-error-2').textContent = '';
+      document.getElementById('btn-step1-next').disabled = false;
+      document.getElementById('btn-step1-next').textContent = 'Verifikasi →';
+      document.getElementById('btn-step1-next').style.background = cfg.btnColor;
 
-      if (action === 'logout') {
-        document.getElementById('modal-title').textContent = '🚪 Konfirmasi Logout';
-        document.getElementById('modal-desc').textContent = 'Sesi WhatsApp akan dihapus dan bot akan minta scan QR ulang. Masukkan password admin.';
-        document.getElementById('btn-confirm').textContent = 'Logout';
-        document.getElementById('btn-confirm').style.background = '#dc2626';
-      } else if (action === 'server') {
-        document.getElementById('modal-title').textContent = '⚡ Konfirmasi Restart Server';
-        document.getElementById('modal-desc').textContent = 'Seluruh proses server akan direstart. Panel akan tidak tersedia sebentar. Masukkan password admin.';
-        document.getElementById('btn-confirm').textContent = 'Restart Server';
-        document.getElementById('btn-confirm').style.background = '#d97706';
-      } else {
-        document.getElementById('modal-title').textContent = '🔒 Konfirmasi Restart';
-        document.getElementById('modal-desc').textContent = 'Bot akan direstart. Masukkan password admin untuk melanjutkan.';
-        document.getElementById('btn-confirm').textContent = 'Restart';
-        document.getElementById('btn-confirm').style.background = '#6366f1';
-      }
+      document.getElementById('modal-confirm-text').textContent = cfg.confirm;
+      document.getElementById('btn-execute').textContent = cfg.btnText;
+      document.getElementById('btn-execute').style.background = cfg.btnColor;
+      document.getElementById('btn-execute').disabled = false;
 
+      document.getElementById('modal-step1').style.display = 'block';
+      document.getElementById('modal-step2').style.display = 'none';
       document.getElementById('modal-overlay').classList.add('open');
       setTimeout(() => document.getElementById('modal-pass').focus(), 100);
     }
@@ -560,69 +714,85 @@ app.get("/", (req, res) => {
 
     document.addEventListener('keydown', function(e) {
       if (e.key === 'Escape') closeModal();
-      if (e.key === 'Enter' && document.getElementById('modal-overlay').classList.contains('open')) doAction();
+      if (e.key === 'Enter' && document.getElementById('modal-overlay').classList.contains('open')) {
+        const step2 = document.getElementById('modal-step2');
+        if (step2.style.display !== 'none') { executeAction(); } else { verifyPassword(); }
+      }
     });
 
-    async function doAction() {
+    async function verifyPassword() {
       const pass = document.getElementById('modal-pass').value.trim();
-      const errEl = document.getElementById('modal-error');
-      const btn = document.getElementById('btn-confirm');
-
-      if (!pass) {
-        errEl.textContent = 'Password tidak boleh kosong.';
-        return;
-      }
+      const errEl = document.getElementById('modal-error-1');
+      const btn   = document.getElementById('btn-step1-next');
+      if (!pass) { errEl.textContent = 'Password tidak boleh kosong.'; return; }
 
       btn.disabled = true;
-      btn.textContent = 'Memproses...';
+      btn.textContent = 'Memeriksa...';
       errEl.textContent = '';
 
-      const endpoint = currentAction === 'logout' ? '/api/logout' : currentAction === 'server' ? '/api/restart-server' : '/api/restart';
-
       try {
-        const res = await fetch(endpoint, {
+        const res  = await fetch('/api/verify-password', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ password: pass }),
         });
         const data = await res.json();
-
         if (data.ok) {
-          closeModal();
-          if (currentAction === 'restart') {
-            document.getElementById('btn-restart').disabled = true;
-            document.getElementById('btn-restart').textContent = '🔄 Restarting...';
-            setTimeout(() => {
-              document.getElementById('btn-restart').disabled = false;
-              document.getElementById('btn-restart').textContent = '🔄 Restart Bot';
-            }, 15000);
-          } else if (currentAction === 'logout') {
-            document.getElementById('btn-logout').disabled = true;
-            document.getElementById('btn-logout').textContent = '🚪 Logging out...';
-            setTimeout(() => {
-              document.getElementById('btn-logout').disabled = false;
-              document.getElementById('btn-logout').textContent = '🚪 Logout Sesi';
-            }, 15000);
-          } else if (currentAction === 'server') {
-            document.getElementById('btn-server').disabled = true;
-            document.getElementById('btn-server').textContent = '⚡ Server restarting...';
-            setTimeout(() => {
-              document.getElementById('btn-server').disabled = false;
-              document.getElementById('btn-server').textContent = '⚡ Restart Server';
-            }, 20000);
-          }
+          verifiedPassword = pass;
+          document.getElementById('modal-step1').style.display = 'none';
+          document.getElementById('modal-step2').style.display = 'block';
         } else {
-          const labels = { restart: 'Restart', logout: 'Logout', server: 'Restart Server' };
-          errEl.textContent = data.message || 'Gagal. Coba lagi.';
+          errEl.textContent = data.message || 'Password salah.';
           btn.disabled = false;
-          btn.textContent = labels[currentAction] || 'Lanjutkan';
+          btn.textContent = 'Verifikasi →';
         }
       } catch (e) {
-        const labels = { restart: 'Restart', logout: 'Logout', server: 'Restart Server' };
         errEl.textContent = 'Koneksi error. Coba lagi.';
         btn.disabled = false;
-        btn.textContent = labels[currentAction] || 'Lanjutkan';
+        btn.textContent = 'Verifikasi →';
       }
+    }
+
+    async function executeAction() {
+      const errEl = document.getElementById('modal-error-2');
+      const btn   = document.getElementById('btn-execute');
+      const cfg   = ACTION_CONFIG[currentAction];
+
+      btn.disabled = true;
+      btn.textContent = 'Memproses...';
+      errEl.textContent = '';
+
+      try {
+        const res  = await fetch(cfg.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: verifiedPassword }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          closeModal();
+          const execBtn = document.getElementById(cfg.execBtnId);
+          execBtn.disabled = true;
+          execBtn.textContent = cfg.processingLabel;
+          setTimeout(() => {
+            execBtn.disabled = false;
+            execBtn.textContent = cfg.execLabel;
+          }, cfg.timeout);
+        } else {
+          errEl.textContent = data.message || 'Gagal. Coba lagi.';
+          btn.disabled = false;
+          btn.textContent = cfg.btnText;
+        }
+      } catch (e) {
+        errEl.textContent = 'Koneksi error. Coba lagi.';
+        btn.disabled = false;
+        btn.textContent = cfg.btnText;
+      }
+    }
+
+    async function logoutPanel() {
+      await fetch('/api/logout-panel', { method: 'POST' });
+      window.location.href = '/login';
     }
   </script>
 </body>
