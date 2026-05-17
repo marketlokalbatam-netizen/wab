@@ -1119,6 +1119,87 @@ function getNumber(text, regex) {
     return parseFloat(match[1].replace(/\./g, "").replace(",", ".")) || 0;
 }
 
+function fmtID(n, dec = 2) {
+    return Number(n || 0).toLocaleString("id-ID", {
+        minimumFractionDigits: dec,
+        maximumFractionDigits: dec,
+    });
+}
+
+// ================= STOK HARIAN =================
+const STOK_TARGET_GROUP = "120363427299570066@g.us";
+const LITER_PER_DRIGEN  = 34;
+
+async function sendStokHarian(storeId, storeName, tanggalDB, tanggalLaporan) {
+    try {
+        const [aggRows] = await db.execute(
+            `SELECT
+                SUM(total_liter)      AS total_penjualan,
+                SUM(bbm_masuk_tanki)  AS total_bbm_masuk,
+                SUM(selisih)          AS total_selisih
+             FROM setoran
+             WHERE store_id = ? AND tanggal = ?`,
+            [storeId, tanggalDB],
+        );
+
+        const [lastRows] = await db.execute(
+            `SELECT sounding_akhir_cm, liter_akhir
+             FROM setoran
+             WHERE store_id = ? AND tanggal = ?
+             ORDER BY jam_keluar DESC, shift DESC
+             LIMIT 1`,
+            [storeId, tanggalDB],
+        );
+
+        const agg  = aggRows[0]  || {};
+        const last = lastRows[0] || {};
+
+        const toDrigen = (l) => Number(l || 0) / LITER_PER_DRIGEN;
+
+        const soundingCm      = fmtID(last.sounding_akhir_cm || 0);
+        const literAkhir      = fmtID(last.liter_akhir        || 0);
+        const drigenAkhir     = fmtID(toDrigen(last.liter_akhir));
+
+        const literBBM        = fmtID(agg.total_bbm_masuk  || 0);
+        const drigenBBM       = fmtID(toDrigen(agg.total_bbm_masuk));
+
+        const literJual       = fmtID(agg.total_penjualan  || 0);
+        const drigenJual      = fmtID(toDrigen(agg.total_penjualan));
+
+        const selisihRaw      = Number(agg.total_selisih || 0);
+        const literSelisih    = fmtID(selisihRaw);
+        const drigenSelisih   = fmtID(toDrigen(selisihRaw));
+
+        const msg =
+`Store : ${storeName}
+Tanggal : ${tanggalLaporan}
+📊 Stok Real Tanki
+
+Sounding akhir terakhir
+${soundingCm} CM / ${literAkhir} L = ${drigenAkhir} Drigen
+
+✅ Stok Tersedia
+${literAkhir} L = ${drigenAkhir} Drigen
+
+🏭 Stok Gudang
+Total BBM masuk tanki
+${literBBM} L = ${drigenBBM} Drigen
+
+⛽ Total Penjualan
+${literJual} L = ${drigenJual} Drigen
+
+⚖️ Total Selisih BBM
+${literSelisih} L = ${drigenSelisih} Drigen`;
+
+        const chat = await client.getChatById(STOK_TARGET_GROUP);
+        await chat.sendMessage(msg);
+        pushLog("ok", `Stok harian ${storeName} dikirim ke grup stok | ${tanggalLaporan}`);
+    } catch (err) {
+        pushLog("error", "Gagal kirim stok harian: " + (err?.message || err));
+        console.log("[STOK ERROR]", err?.message || err, err?.stack || "");
+    }
+}
+
 // ================= SUMMARY =================
 async function handleSummary(message, args) {
     const now = new Date();
@@ -1294,6 +1375,10 @@ client.on("message", async (message) => {
             "| JAM MASUK DB :", dbData.jam_masuk,
             "| SHIFT DB :", shift,
         );
+
+        if (message.from !== STOK_TARGET_GROUP && dbData.store_id) {
+            sendStokHarian(dbData.store_id, dbData.store_name, tanggalDB, tanggalLaporan);
+        }
 
         const validLiter      = Math.abs(Number(dbData.total_liter) - totalLiter) < 0.01;
         const validCash       = Math.abs(Number(dbData.cash) - cash) < 1;
